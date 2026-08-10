@@ -6,114 +6,44 @@
 > Cách trả lời: thay dòng `> *Câu trả lời của bạn*` bằng câu trả lời.
 > `grade.py` đếm số câu đã trả lời (15 điểm cho 10 câu).
 >
-> Họ và tên: ..........................  Mã học viên: ..........................
+> Họ và tên: Nguyễn Trọng Toàn  Mã học viên: 2A202601493
 
----
 
-### Câu 1 — Fail fast (CP1)
+1. Khi deploy lên Railway, nếu tôi quên đặt `AGENT_API_KEY`, ứng dụng sẽ báo lỗi cấu hình ngay thay vì tiếp tục chạy với khóa mặc định như `"changeme"`. Điều này giúp tôi phát hiện sai cấu hình trước khi public API bị người khác gọi bằng một khóa dễ đoán.
 
-Trong `Settings`, `agent_api_key` không có giá trị mặc định nên app chết ngay
-khi khởi động nếu thiếu biến môi trường. Hãy mô tả một tình huống cụ thể mà
-việc "chết sớm" này cứu bạn, so với việc để mặc định `"changeme"`.
+2. Dòng log tôi thu được:
 
-> *Câu trả lời của bạn*
-
----
-
-### Câu 2 — Log cho máy đọc (CP1)
-
-Chạy service và gọi `/ask` vài lần. Dán một dòng log JSON bạn thu được, rồi
-nêu **hai** việc bạn làm được với dòng log đó mà `print("đã trả lời xong")`
-không làm được.
-
-> *Câu trả lời của bạn*
-
----
-
-### Câu 3 — Kích thước image (CP2)
-
-Build cả hai phiên bản và ghi lại số đo thật:
-
-```bash
-docker build -f <Dockerfile-1-stage> -t agent:single .
-docker build -t agent:multi .
-docker images | grep agent
+```text
+[DÁN MỘT DÒNG JSON CÓ event="ask_completed" TỪ LOG]
 ```
 
-| Bản | Dung lượng |
-|-----|-----------|
-| 1 stage (bản đầu) | ... MB |
-| Multi-stage | ... MB |
+Với log JSON, tôi có thể lọc các request theo `user_id` và thống kê chi phí theo `cost_usd`. Dòng `print("đã trả lời xong")` không có trường dữ liệu rõ ràng nên khó tìm kiếm, tổng hợp và đưa vào hệ thống giám sát.
 
-Giải thích: phần dung lượng chênh lệch đó là những gì?
+3. Kết quả thực tế:
 
-> *Câu trả lời của bạn*
+```text
+1 stage: [ĐIỀN KÍCH THƯỚC] MB
+Multi-stage: [ĐIỀN KÍCH THƯỚC] MB
+```
 
----
+Phần dung lượng chênh lệch chủ yếu đến từ base image Python đầy đủ, pip cache, compiler và các công cụ chỉ cần trong quá trình build. Multi-stage chỉ chuyển dependency đã cài và source cần thiết sang runtime nên image nhỏ hơn.
 
-### Câu 4 — Thứ tự lệnh trong Dockerfile (CP2)
+4. Khi chỉ sửa một ký tự trong `app/main.py`, các layer base image, copy `requirements.txt` và cài dependency được lấy lại từ cache. Layer copy source và các layer phía sau phải chạy lại. Nếu đặt `COPY . .` trước `RUN pip install`, mọi thay đổi source đều làm layer copy thay đổi, khiến pip phải cài lại toàn bộ thư viện.
 
-Sửa một ký tự trong `app/main.py` rồi build lại. Với Dockerfile của bạn, những
-layer nào được dùng lại từ cache, layer nào phải chạy lại? Nếu bạn đặt
-`COPY . .` lên trước `RUN pip install` thì kết quả khác thế nào?
+5. Nếu code Python có lỗ hổng thực thi lệnh, kẻ tấn công có thể chạy lệnh với quyền của process trong container. Nếu container chạy bằng root, kẻ tấn công có quyền root trong container và có thể tiếp tục lợi dụng volume mount, capability hoặc lỗ hổng container runtime để tấn công host. Lệnh `USER appuser` giới hạn quyền ngay tại bước chiếm process, khiến kẻ tấn công chỉ có quyền của user thường.
 
-> *Câu trả lời của bạn*
+6. Với fixed window 10 request/phút, người dùng có thể gửi tối đa 20 request trong 2 giây: gửi 10 request ở giây 59 của phút trước và thêm 10 request ở giây 00 của phút sau. Sliding window ngăn trường hợp này vì luôn đếm trong 60 giây gần nhất.
 
----
+7. Rate limit giới hạn số request trong một khoảng thời gian ngắn, còn cost guard giới hạn tổng số tiền trong tháng. Một request rất dài và đắt có thể được rate limit cho qua nhưng bị cost guard chặn. Ngược lại, nhiều request rất rẻ gửi liên tục có thể vẫn còn ngân sách nhưng bị rate limit chặn vì vượt số request/phút.
 
-### Câu 5 — Vì sao không chạy bằng root (CP2)
+8. Nếu gộp `/health` và `/ready` rồi kiểm tra Redis trong cùng endpoint, khi Redis mất kết nối thì cả ba container đều bị đánh dấu unhealthy. Orchestrator restart cả ba container, nhưng Redis vẫn chưa hoạt động nên chúng tiếp tục fail và rơi vào vòng lặp restart. Tách hai endpoint giúp container vẫn được xem là còn sống, trong khi load balancer chỉ tạm ngừng gửi traffic tới instance chưa ready.
 
-Container mặc định chạy bằng root. Mô tả chuỗi sự kiện dẫn từ "một lỗ hổng
-trong code Python của bạn" tới "kẻ tấn công có quyền cao trên máy host", và
-lệnh `USER` cắt đứt chuỗi đó ở chỗ nào.
+9. Nếu lịch sử được lưu bằng dict Python, mỗi container có một bản lịch sử riêng. Khi load balancer phân phối request sang các container khác nhau, `history_length` có thể lúc là 0, lúc là 2 hoặc quay lại số cũ. Khi dùng Redis, mọi container nhìn thấy cùng dữ liệu nên lịch sử tăng ổn định theo các lượt hội thoại: 0, 2, 4, 6.
 
-> *Câu trả lời của bạn*
+10. Khi deploy Railway, tôi gặp lỗi:
 
----
+```text
+Invalid value for '--port': '$PORT' is not a valid integer
+```
 
-### Câu 6 — Cửa sổ trượt (CP3)
-
-Rate limit của bạn dùng sliding window 60 giây. Nếu thay bằng cách đếm theo
-phút đồng hồ (reset lúc giây 00), một người dùng có thể gửi tối đa bao nhiêu
-request trong 2 giây liên tiếp khi hạn mức là 10/phút? Giải thích cách đạt được
-con số đó.
-
-> *Câu trả lời của bạn*
-
----
-
-### Câu 7 — Rate limit và cost guard (CP3)
-
-Hai cơ chế này khác nhau ở điểm nào? Cho một tình huống mà rate limit cho qua
-nhưng cost guard phải chặn, và một tình huống ngược lại.
-
-> *Câu trả lời của bạn*
-
----
-
-### Câu 8 — /health khác /ready (CP4)
-
-Nếu gộp hai endpoint làm một và cho nó kiểm tra Redis, chuyện gì xảy ra với cụm
-3 container khi Redis mất kết nối 30 giây? Trả lời theo đúng thứ tự sự kiện.
-
-> *Câu trả lời của bạn*
-
----
-
-### Câu 9 — Stateless (CP4)
-
-Chạy `docker compose up --scale agent=3` rồi gọi `/ask` nhiều lần với cùng một
-`X-User-Id`. Quan sát `history_length` trong response. Nếu lịch sử được lưu
-trong một dict Python thay vì Redis, bạn sẽ thấy con số đó thay đổi thế nào?
-
-> *Câu trả lời của bạn*
-
----
-
-### Câu 10 — Deploy thật (CP5)
-
-Ghi lại **một** lỗi bạn gặp khi deploy lên cloud (build fail, health check
-timeout, sai REDIS_URL, app không đọc `$PORT`...): thông báo lỗi là gì, bạn
-tìm ra nguyên nhân bằng cách nào, và sửa ra sao?
-
-> *Câu trả lời của bạn*
+Tôi tìm nguyên nhân bằng cách đọc deployment log và thấy Uvicorn nhận nguyên chuỗi `$PORT` thay vì một số cổng. Nguyên nhân là start command của Docker chạy ở exec form nên không tự nội suy biến môi trường. Tôi sửa `railway.toml` bằng cách bọc lệnh trong `/bin/sh -c`, commit, push và deploy lại. Sau đó Railway truyền đúng cổng và service khởi động thành công.
